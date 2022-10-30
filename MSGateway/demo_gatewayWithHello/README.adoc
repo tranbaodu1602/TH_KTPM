@@ -1,0 +1,317 @@
+:spring_version: current
+:spring_boot_version: 2.5.4
+:Controller: https://docs.spring.io/spring/docs/{spring_version}/javadoc-api/org/springframework/stereotype/Controller.html
+:DispatcherServlet: https://docs.spring.io/spring/docs/{spring_version}/javadoc-api/org/springframework/web/servlet/DispatcherServlet.html
+:SpringApplication: https://docs.spring.io/spring-boot/docs/{spring_boot_version}/api/org/springframework/boot/SpringApplication.html
+:ResponseBody: https://docs.spring.io/spring/docs/{spring_version}/javadoc-api/org/springframework/web/bind/annotation/ResponseBody.html
+:toc:
+:icons: font
+:source-highlighter: prettify
+:project_id: gs-gateway
+This guide walks you through how to use the Spring Cloud Gateway
+
+== What You Will Build
+
+You will build a gateway using https://cloud.spring.io/spring-cloud-gateway/[Spring Cloud Gateway].
+
+
+== What You Need
+
+:java_version: 1.8
+include::https://raw.githubusercontent.com/spring-guides/getting-started-macros/main/prereq_editor_jdk_buildtools.adoc[]
+
+include::https://raw.githubusercontent.com/spring-guides/getting-started-macros/main/how_to_complete_this_guide.adoc[]
+
+[[scratch]]
+== Starting with Spring Initializr
+
+You can use this https://start.spring.io/#!type=maven-project&language=java&platformVersion=2.5.5&packaging=jar&jvmVersion=11&groupId=com.example&artifactId=gateway&name=gateway&description=Demo%20project%20for%20Spring%20Boot&packageName=com.example.gateway&dependencies=cloud-gateway,cloud-resilience4j,cloud-contract-stub-runner[pre-initialized project] and click Generate to download a ZIP file. This project is configured to fit the examples in this tutorial.
+
+To manually initialize the project:
+
+. Navigate to https://start.spring.io.
+This service pulls in all the dependencies you need for an application and does most of the setup for you.
+. Choose either Gradle or Maven and the language you want to use. This guide assumes that you chose Java.
+. Click *Dependencies* and select *Gateway*, *Resilience4J*, and *Contract Stub Runner*.
+. Click *Generate*.
+. Download the resulting ZIP file, which is an archive of a web application that is configured with your choices.
+
+NOTE: If your IDE has the Spring Initializr integration, you can complete this process from your IDE.
+
+NOTE: You can also fork the project from Github and open it in your IDE or other editor.
+
+[[initial]]
+== Creating A Simple Route
+
+The Spring Cloud Gateway uses routes to process requests to downstream services. In
+this guide, we route all of our requests to https://httpbin.org[HTTPBin]. Routes can be configured
+a number of ways, but, for this guide, we use the Java API provided
+by the Gateway.
+
+To get started, create a new `Bean` of type `RouteLocator` in `Application.java`.
+
+`src/main/java/gateway/Application.java`
+[source,java,tabsize=2]
+----
+@Bean
+public RouteLocator myRoutes(RouteLocatorBuilder builder) {
+    return builder.routes().build();
+}
+----
+
+The `myRoutes` method takes in a `RouteLocatorBuilder` that can be used
+to create routes. In addition to creating routes, `RouteLocatorBuilder` lets you add predicates and filters to your routes so that
+you can route handle based on certain conditions as well as alter the request/response as you see fit.
+
+Now we can create a route that routes a request to `https://httpbin.org/get` when a request is
+made to the Gateway at `/get`. In our configuration of this route, we add a filter that adds the
+`Hello` request header with a value of `World` to the request before it is routed:
+
+`src/main/java/gateway/Application.java`
+[source,java,tabsize=2]
+----
+@Bean
+public RouteLocator myRoutes(RouteLocatorBuilder builder) {
+    return builder.routes()
+        .route(p -> p
+            .path("/get")
+            .filters(f -> f.addRequestHeader("Hello", "World"))
+            .uri("http://httpbin.org:80"))
+        .build();
+}
+----
+
+To test our simple Gateway, we can run `Application.java` on port `8080`.
+Once the application is running, make a request to `http://localhost:8080/get`.
+You can do so by using the following cURL command in your terminal:
+
+[source,bash]
+----
+$ curl http://localhost:8080/get
+----
+
+You should receive a response back that looks similar to the following output:
+
+[source,json]
+----
+{
+  "args": {},
+  "headers": {
+    "Accept": "*/*",
+    "Connection": "close",
+    "Forwarded": "proto=http;host=\"localhost:8080\";for=\"0:0:0:0:0:0:0:1:56207\"",
+    "Hello": "World",
+    "Host": "httpbin.org",
+    "User-Agent": "curl/7.54.0",
+    "X-Forwarded-Host": "localhost:8080"
+  },
+  "origin": "0:0:0:0:0:0:0:1, 73.68.251.70",
+  "url": "http://localhost:8080/get"
+}
+----
+
+Note that HTTPBin shows that the `Hello` header with a value of `World` was sent in the request.
+
+== Using Spring Cloud CircuitBreaker
+
+Now we can do something a little more interesting. Since the services behind the Gateway could
+potentially behave poorly and affect our clients, we might want to wrap the routes we create
+in circuit breakers. You can do so in the Spring Cloud Gateway by using the Resilience4J Spring Cloud CircuitBreaker implementation.
+This is implemented through a simple filter that you can add to your requests.
+We can create another route to demonstrate this.
+
+To use this filter you need to add the reactive Resilience4J CircuitBreaker dependency to your classpath.
+
+`pom.xml`
+[source,java,tabsize=2]
+----
+...
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-circuitbreaker-reactor-resilience4j</artifactId>
+</dependency>
+...
+----
+
+`build.gradle`
+[source,java,tabsize=2]
+----
+...
+implementation("org.springframework.cloud:spring-cloud-starter-circuitbreaker-reactor-resilience4j")
+...
+----
+
+In the next example, we use HTTPBin's delay API, which waits a certain number of
+seconds before sending a response. Since this API could potentially take a long
+time to send its response, we can wrap the route that uses this API in a circuit breaker.
+The following listing adds a new route to our `RouteLocator` object:
+
+`src/main/java/gateway/Application.java`
+[source,java,tabsize=2]
+----
+@Bean
+public RouteLocator myRoutes(RouteLocatorBuilder builder) {
+    return builder.routes()
+        .route(p -> p
+            .path("/get")
+            .filters(f -> f.addRequestHeader("Hello", "World"))
+            .uri("http://httpbin.org:80"))
+        .route(p -> p
+            .host("*.circuitbreaker.com")
+            .filters(f -> f.circuitBreaker(config -> config.setName("mycmd")))
+            .uri("http://httpbin.org:80")).
+        build();
+}
+----
+
+There are some differences between this new route configuration and the previous one we created. For one,
+we use the host predicate instead of the path predicate. This means that, as long as
+the host is `circuitbreaker.com`, we route the request to HTTPBin and wrap that request in
+a circuit breaker.  We do so by applying a filter to the route. We can configure the circuit breaker filter
+by using a configuration object. In this example, we give the
+circuit breaker a name of `mycmd`.
+
+Now we can test this new route. To do so, we need to start the application, but, this time, we are going to make a request
+to `/delay/3`. It is also important that we include a `Host` header that has a host
+of `circuitbreaker.com`. Otherwise, the request is not routed. We can use the following cURL command:
+
+[source,bash]
+----
+$ curl --dump-header - --header 'Host: www.circuitbreaker.com' http://localhost:8080/delay/3
+----
+
+NOTE: We use `--dump-header` to see the response headers. The `-` after `--dump-header`
+tells cURL to print the headers to stdout.
+
+After using this command, you should see the following in your terminal:
+
+[source,bash]
+----
+HTTP/1.1 504 Gateway Timeout
+content-length: 0
+----
+
+As you can see the circuit breaker timed out while waiting for the response from HTTPBin. When the circuit breaker times out,
+we can optionally provide a fallback so that clients do not receive a `504` but something
+more meaningful. In a production scenario, you might return some data from a cache, for example,
+but, in our simple example, we return a response with the body `fallback` instead.
+
+To do so, we can modify our circuit breaker filter to provide a URL to call in the case of a timeout:
+
+`src/main/java/gateway/Application.java`
+[source,java,tabsize=2]
+----
+@Bean
+public RouteLocator myRoutes(RouteLocatorBuilder builder) {
+    return builder.routes()
+        .route(p -> p
+            .path("/get")
+            .filters(f -> f.addRequestHeader("Hello", "World"))
+            .uri("http://httpbin.org:80"))
+        .route(p -> p
+            .host("*.circuitbreaker.com")
+            .filters(f -> f.circuitBreaker(config -> config
+                .setName("mycmd")
+                .setFallbackUri("forward:/fallback")))
+            .uri("http://httpbin.org:80"))
+        .build();
+}
+----
+
+Now, when the circuit breaker wrapped route times out, it calls `/fallback` in the Gateway application.
+Now we can add the `/fallback` endpoint to our application.
+
+In `Application.java`, we add the `@RestController` class level annotation and then add the following
+`@RequestMapping` to the class:
+
+`src/main/java/gateway/Application.java`
+[source,java,tabsize=2,indent=0]
+----
+include::complete/src/main/java/gateway/Application.java[tag=fallback]
+----
+
+To test this new fallback functionality, restart the application and again issue the following
+cURL command
+
+[source,bash]
+----
+$ curl --dump-header - --header 'Host: www.circuitbreaker.com' http://localhost:8080/delay/3
+----
+
+With the fallback in place, we now see that we get a `200` back from the Gateway with the response
+body of `fallback`.
+
+[source,bash]
+----
+HTTP/1.1 200 OK
+transfer-encoding: chunked
+Content-Type: text/plain;charset=UTF-8
+
+fallback
+----
+
+== Writing Tests
+
+As a good developer, we should write some tests to make sure our Gateway is doing what we
+expect it should. In most cases, we want to limit our dependencies on outside resources,
+especially in unit tests, so we should not depend on HTTPBin. One solution to this problem
+is to make the URI in our routes configurable, so we can change the URI if we need to.
+
+To do so, in `Application.java`, we can create a new class called `UriConfiguration`:
+
+
+[source,java,tabsize=2]
+----
+include::complete/src/main/java/gateway/Application.java[tag=uri-configuration]
+----
+
+To enable `ConfigurationProperties`, we need to also add a class-level annotation
+to `Application.java`.
+
+```
+@EnableConfigurationProperties(UriConfiguration.class)
+```
+
+With our new configuration class in place, we can use it in the `myRoutes` method:
+
+`src/main/java/gateway/Application.java`
+[source,java,tabsize=2,indent=0]
+----
+include::complete/src/main/java/gateway/Application.java[tag=route-locator]
+----
+
+Instead of hardcoding the URL to HTTPBin, we instead get the URL from our
+new configuration class.
+
+The following listing shows the complete contents of `Application.java`:
+
+`src/main/java/gateway/Application.java`
+[source,java,tabsize=2]
+----
+include::complete/src/main/java/gateway/Application.java[tag=code]
+----
+
+Now we can create a new class called `ApplicationTest` in `src/main/test/java/gateway`.
+In the new class, we add the following content:
+
+[source,java,tabsize=2]
+----
+include::complete/src/test/java/gateway/ApplicationTest.java[tag=code]
+----
+
+Our test takes advantage of WireMock from Spring Cloud Contract
+stand up a server that can mock the APIs from HTTPBin. The first thing to notice
+is the use of `@AutoConfigureWireMock(port = 0)`. This annotation starts WireMock
+on a random port for us.
+
+Next, note that we take advantage of our `UriConfiguration` class and set the
+`httpbin` property in the `@SpringBootTest` annotation to the WireMock server running locally. Within the test, we then
+setup "`stubs`" for the HTTPBin APIs we call through the Gateway and mock the behavior we expect.
+Finally, we use `WebTestClient` to make requests to the Gateway and validate the responses.
+
+
+== Summary
+
+Congratulations! You have just built your first Spring Cloud Gateway application!
+
+include::https://raw.githubusercontent.com/spring-guides/getting-started-macros/main/footer.adoc[]
